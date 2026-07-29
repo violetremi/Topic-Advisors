@@ -171,3 +171,13 @@ class SystemConfigOut(BaseModel):
 
 class SystemConfigUpdate(BaseModel):
     items: list[SystemConfigItem]
+
+
+# ── Auth ──
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=64, description="用户名（唯一标识，无密码）")
+
+
+class LoginResponse(BaseModel):
+    username: str
+    user_id: int

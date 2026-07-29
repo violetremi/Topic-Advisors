@@ -568,7 +568,9 @@ async def run_industry_analysis(company_name: str, credit_code: str, **llm_kwarg
     ]
 
     search_results_list = await asyncio.gather(
-        *[web_search(q, max_results=4) for q in search_queries],
+        *[web_search(q, max_results=4,
+                     search_provider=llm_kwargs.get("search_provider"),
+                     search_api_key=llm_kwargs.get("search_api_key")) for q in search_queries],
         return_exceptions=True,
     )
 
@@ -606,7 +608,9 @@ async def run_company_analysis(company_name: str, credit_code: str, **llm_kwargs
         f"{company_name} 工商信息 注册信息",
     ]
     search_results_list = await asyncio.gather(
-        *[web_search(q, max_results=4) for q in search_queries],
+        *[web_search(q, max_results=4,
+                     search_provider=llm_kwargs.get("search_provider"),
+                     search_api_key=llm_kwargs.get("search_api_key")) for q in search_queries],
         return_exceptions=True,
     )
 
@@ -666,7 +670,9 @@ async def run_summary_analysis(
         f"{company_name} 产品 发布 合作",
     ]
     for q in company_queries:
-        search_tasks.append(web_search(q, max_results=4))
+        search_tasks.append(web_search(q, max_results=4,
+                                       search_provider=llm_kwargs.get("search_provider"),
+                                       search_api_key=llm_kwargs.get("search_api_key")))
 
     # 人员搜索（如果有人员信息）
     people_search_tasks = []
@@ -675,7 +681,9 @@ async def run_summary_analysis(
             person_name = person.get("name", "")
             if person_name:
                 people_search_tasks.append(
-                    web_search(f"{person_name} {company_name}", max_results=3)
+                    web_search(f"{person_name} {company_name}", max_results=3,
+                              search_provider=llm_kwargs.get("search_provider"),
+                              search_api_key=llm_kwargs.get("search_api_key"))
                 )
 
     # 并发执行所有搜索
@@ -737,7 +745,11 @@ async def run_topic_analysis(
     search_results = ""
     if person_name:
         try:
-            search_results = await web_search(f"{person_name} {company_name}", max_results=5)
+            search_results = await web_search(
+                f"{person_name} {company_name}", max_results=5,
+                search_provider=llm_kwargs.get("search_provider"),
+                search_api_key=llm_kwargs.get("search_api_key"),
+            )
         except Exception:
             search_results = "（搜索暂不可用）"
 

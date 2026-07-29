@@ -7,13 +7,13 @@ import os
 import traceback
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from sqlalchemy import select
 
-from database import init_db, async_session_factory
-from routers import companies, persons, reports, settings, news, person_analysis, topic_chain
+from database import init_db
+from deps import get_current_user
+from routers import companies, persons, reports, settings, news, person_analysis, topic_chain, auth
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,26 +26,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("--- 大内密探 系统启动 ---")
     await init_db()
-    # 首次启动时写入默认系统配置
-    await _seed_default_settings()
     logger.info("数据库初始化完成")
     yield
     logger.info("--- 系统关闭 ---")
-
-
-async def _seed_default_settings():
-    """若 DB 中没有任何配置项，则写入默认值"""
-    from models import SystemConfig
-    from routers.settings import DEFAULT_SETTINGS
-
-    async with async_session_factory() as db:
-        result = await db.execute(select(SystemConfig).limit(1))
-        if result.scalar_one_or_none():
-            return  # 已有配置，不覆盖
-        for key, value in DEFAULT_SETTINGS.items():
-            db.add(SystemConfig(key=key, value=value))
-        await db.commit()
-        logger.info("默认系统配置已写入数据库")
 
 
 app = FastAPI(
@@ -64,14 +47,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 注册路由
-app.include_router(companies.router)
-app.include_router(persons.router)
-app.include_router(reports.router)
-app.include_router(settings.router)
-app.include_router(news.router)
-app.include_router(person_analysis.router)
-app.include_router(topic_chain.router)
+# 注册路由（业务路由统一要求登录：从 X-Username 头解析当前用户）
+_AUTH = [Depends(get_current_user)]
+app.include_router(companies.router, dependencies=_AUTH)
+app.include_router(persons.router, dependencies=_AUTH)
+app.include_router(reports.router, dependencies=_AUTH)
+app.include_router(settings.router, dependencies=_AUTH)
+app.include_router(news.router, dependencies=_AUTH)
+app.include_router(person_analysis.router, dependencies=_AUTH)
+app.include_router(topic_chain.router, dependencies=_AUTH)
+# 登录接口本身不要求鉴权
+app.include_router(auth.router)
 
 
 @app.exception_handler(Exception)

@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { Layout, Menu, Typography } from 'antd';
+import { Layout, Menu, Typography, Button, Popconfirm, Space } from 'antd';
 import {
   SafetyOutlined,
   SettingOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  LogoutOutlined,
+  UserOutlined,
 } from '@ant-design/icons';
 import CompaniesList from './pages/CompaniesList';
 import CompanyLayout from './pages/CompanyLayout';
@@ -15,6 +17,8 @@ import PeopleAnalysis from './pages/PeopleAnalysis';
 import PersonDetail from './pages/PersonDetail';
 import SummaryAnalysis from './pages/SummaryAnalysis';
 import SystemSettings from './pages/SystemSettings';
+import Login from './pages/Login';
+import { useAuth } from './context/AuthContext';
 
 const { Sider, Header, Content } = Layout;
 const { Text } = Typography;
@@ -23,6 +27,7 @@ const AppLayout: React.FC = () => {
   const [collapsed, setCollapsed] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const { username, logout } = useAuth();
 
   // 根据当前路径确定选中的菜单项
   const selectedKey = location.pathname.startsWith('/companies')
@@ -106,6 +111,20 @@ const AppLayout: React.FC = () => {
           <Text strong style={{ marginLeft: 16, fontSize: 16 }}>
             企业情报分析系统
           </Text>
+          <Space style={{ marginLeft: 'auto' }} size="middle">
+            <Text type="secondary">
+              <UserOutlined /> {username}
+            </Text>
+            <Popconfirm
+              title="退出登录"
+              description="将以当前用户名登出，数据不会删除。"
+              okText="退出"
+              cancelText="取消"
+              onConfirm={logout}
+            >
+              <Button size="small" icon={<LogoutOutlined />}>退出</Button>
+            </Popconfirm>
+          </Space>
         </Header>
         <Content style={{ background: '#fff', minHeight: 'calc(100vh - 64px)' }}>
           <Routes>
@@ -127,10 +146,13 @@ const AppLayout: React.FC = () => {
   );
 };
 
-const App: React.FC = () => (
-  <BrowserRouter>
-    <AppLayout />
-  </BrowserRouter>
-);
+const App: React.FC = () => {
+  const { username } = useAuth();
+  return (
+    <BrowserRouter>
+      {username ? <AppLayout /> : <Login />}
+    </BrowserRouter>
+  );
+};
 
 export default App;

@@ -1,4 +1,4 @@
-"""新闻搜索路由 - 提供行业新闻和企业新闻（AI 过滤 + 持久化 + 向量化）"""
+"""新闻搜索路由 - 提供行业新闻和企业新闻（AI 过滤 + 持久化 + 向量化，按用户隔离）"""
 import hashlib
 import logging
 import re
@@ -9,12 +9,17 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from models import Company, SystemConfig, News
+from deps import (
+    get_current_user,
+    get_owned_company,
+    get_user_llm_config,
+    llm_config_kwargs,
+)
+from models import Company, News, Person, User
 from schemas import NewsResponse, HobbyNewsGroup, PersonHobbyNewsResponse
 from services.agent_service import (
     web_search,
     filter_news_with_ai,
-    set_search_config,
     generate_hobby_search_keywords,
     generate_company_person_search_keywords,
 )
@@ -76,7 +81,6 @@ def _company_exclude_keywords(company_name: str, credit_code: str = "") -> list[
     name = (company_name or "").strip()
     if name:
         keys.append(name)
-        # 常见简称：去掉「股份有限公司/有限公司/集团」等后缀
         short = re.sub(
             r"(股份有限公司|有限责任公司|有限公司|集团公司|集团股份|集团)+$",
             "",
@@ -87,7 +91,6 @@ def _company_exclude_keywords(company_name: str, credit_code: str = "") -> list[
     code = (credit_code or "").strip()
     if code:
         keys.append(code)
-    # 去重保序
     seen: set[str] = set()
     out: list[str] = []
     for k in keys:
@@ -123,41 +126,6 @@ async def _clear_news_type(db: AsyncSession, company_id: int, news_type: str) ->
     )
     await db.commit()
     return int(result.rowcount or 0)
-
-
-async def _load_llm_config(db: AsyncSession) -> dict:
-    from config.settings import settings
-    result = await db.execute(select(SystemConfig))
-    rows = result.scalars().all()
-    cfg = {r.key: r.value for r in rows}
-
-    # 设置搜索引擎配置（全局生效）
-    search_provider = cfg.get("search_provider", "duckduckgo") or "duckduckgo"
-    search_api_key = cfg.get("search_api_key", "") or ""
-    # 兼容历史字段 tavily_api_key；DuckDuckGo 不可用时自动切到 Tavily
-    tavily_key = cfg.get("tavily_api_key", "") or ""
-    if search_provider == "tavily" and not search_api_key and tavily_key:
-        search_api_key = tavily_key
-    elif search_provider == "duckduckgo" and tavily_key:
-        search_provider = "tavily"
-        search_api_key = tavily_key
-        logger.info("检测到 tavily_api_key，自动切换搜索引擎为 Tavily")
-    set_search_config(search_provider, search_api_key)
-
-    return {
-        "base_url": cfg.get("llm_base_url") or settings.openai_base_url,
-        "api_key": cfg.get("llm_api_key") or settings.openai_api_key,
-        "model": cfg.get("llm_model") or settings.llm_model,
-        "embed_model": cfg.get("llm_embed_model") or settings.embed_model,
-    }
-
-
-def _llm_config_kwargs(cfg: dict) -> dict:
-    return {
-        "base_url_override": cfg["base_url"],
-        "api_key_override": cfg["api_key"],
-        "model_override": cfg["model"],
-    }
 
 
 def _guess_industry(company_name: str) -> str:
@@ -235,11 +203,7 @@ def _news_to_item(n: News) -> dict:
 async def _save_news(
     db: AsyncSession, company_id: int, news_type: str, items: list[dict]
 ) -> list[News]:
-    """将 AI 筛选新闻入库（URL / 标题去重），返回新插入的 News 行。
-
-    使用 savepoint 逐条插入，避免单条唯一约束冲突导致整会话 rollback，
-    进而触发后续访问 ORM 的 MissingGreenlet。
-    """
+    """将 AI 筛选新闻入库（URL / 标题去重），返回新插入的 News 行。"""
     result = await db.execute(
         select(News).where(
             News.company_id == company_id,
@@ -337,11 +301,7 @@ async def _search_and_filter(
     hobbies: list[str] | None = None,
     replace_existing: bool = False,
 ) -> tuple[list[dict], bool, str, int]:
-    """搜索 + AI 过滤 + 入库向量化。返回 (items, ai_filtered, message, 新增数)。
-
-    replace_existing=True：先清空该 news_type 旧缓存再写入（一般不使用，默认去重累加）。
-    入参全部使用标量，避免 rollback 后访问 ORM 触发 MissingGreenlet。
-    """
+    """搜索 + AI 过滤 + 入库向量化。返回 (items, ai_filtered, message, 新增数)。"""
     topic = (focus_topic or "").strip()
     mode = (filter_mode or "company").strip().lower()
     exclude_keys = _company_exclude_keywords(company_name, credit_code)
@@ -350,7 +310,12 @@ async def _search_and_filter(
     raw_results = []
     for q in queries:
         try:
-            result = await web_search(q, max_results=6)
+            result = await web_search(
+                q,
+                max_results=6,
+                search_provider=cfg.get("search_provider"),
+                search_api_key=cfg.get("search_api_key"),
+            )
             if result and "联网搜索暂时不可用" not in result:
                 raw_results.append(f"--- 搜索: {q} ---\n{result}")
         except Exception as e:
@@ -386,7 +351,7 @@ async def _search_and_filter(
         exclude_company=company_name if mode == "hobby" else "",
         person_position=person_position,
         hobbies=hobby_list,
-        **{**_llm_config_kwargs(cfg), "max_tokens": 4096},
+        **{**llm_config_kwargs(cfg), "max_tokens": 4096},
     )
 
     if mode == "hobby":
@@ -400,7 +365,6 @@ async def _search_and_filter(
     new_rows = await _save_news(db, company_id, news_type, items)
     await _vectorize_saved(db, new_rows, cfg)
 
-    # 补齐同 news_type 下历史未向量化的记录，便于后续综合分析
     cached_rows = await _list_cached_news(db, company_id, news_type)
     need_vec = [n for n in cached_rows if not (n.embedding or "").strip()]
     if need_vec:
@@ -427,12 +391,10 @@ async def get_cached_news(
     company_id: int,
     news_type: str = "industry",
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """获取已缓存的新闻（从数据库中读取历史搜索记录）"""
-    company = await db.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="企业不存在")
-
+    await get_owned_company(company_id, current_user, db)
     rows = await _list_cached_news(db, company_id, news_type)
     items = [_news_to_item(n) for n in rows]
     logger.info(f"缓存新闻: company={company_id}, type={news_type}, {len(items)} 条")
@@ -443,16 +405,15 @@ async def get_cached_news(
 async def get_industry_news(
     company_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """获取该企业所属行业的新闻（AI 过滤，入库去重，向量化，返回全量缓存）"""
-    company = await db.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="企业不存在")
+    company = await get_owned_company(company_id, current_user, db)
 
     company_name = str(company.name or "")
     credit_code = str(company.credit_code or "")
     industry_hint = _guess_industry(company_name)
-    cfg = await _load_llm_config(db)
+    cfg = await get_user_llm_config(current_user, db)
     queries = [
         f"{company_name} {industry_hint} 行业 新闻 最新动态" if industry_hint else f"{company_name} 行业 新闻 动态",
         f"{company_name} 融资 合作 业务 2026",
@@ -481,16 +442,15 @@ async def get_industry_news(
 async def get_company_news(
     company_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """获取该企业自身的新闻（AI 过滤，入库去重，向量化，返回全量缓存）"""
-    company = await db.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="企业不存在")
+    company = await get_owned_company(company_id, current_user, db)
 
     company_name = str(company.name or "")
     credit_code = str(company.credit_code or "")
     industry_hint = _guess_industry(company_name)
-    cfg = await _load_llm_config(db)
+    cfg = await get_user_llm_config(current_user, db)
     queries = [
         f"{company_name} {credit_code} 新闻 最新",
         f"{company_name} 融资 财报 业务 产品 2026",
@@ -518,13 +478,11 @@ async def get_company_news(
 async def get_people_news(
     company_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """获取企业核心人员的相关新闻（AI 过滤，入库去重，向量化，返回全量缓存）"""
-    company = await db.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="企业不存在")
+    company = await get_owned_company(company_id, current_user, db)
 
-    from models import Person
     result = await db.execute(
         select(Person).where(Person.company_id == company_id)
     )
@@ -532,9 +490,8 @@ async def get_people_news(
 
     company_name = str(company.name or "")
     industry_hint = _guess_industry(company_name)
-    cfg = await _load_llm_config(db)
+    cfg = await get_user_llm_config(current_user, db)
 
-    # 用核心人员姓名构建搜索关键词
     person_names = [p.name for p in people[:5] if p.name]
     queries = []
     if person_names:
@@ -564,20 +521,18 @@ async def get_cached_person_hobby_news(
     company_id: int,
     person_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """读取该人员「企业」标签 + 各兴趣标签已入库新闻（不触发联网搜索）"""
-    company = await db.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="企业不存在")
+    await get_owned_company(company_id, current_user, db)
 
-    from models import Person
     person = await db.get(Person, person_id)
     if not person or person.company_id != company_id:
         raise HTTPException(status_code=404, detail="人员不存在")
 
     hobbies = parse_hobby_tags(person.hobbies)
-    company_name = str(company.name or "")
-    credit_code = str(company.credit_code or "")
+    company_name = str(person.company.name if person.company else "")
+    credit_code = str(person.company.credit_code if person.company else "")
     exclude_keys = _company_exclude_keywords(company_name, credit_code)
     groups: list[HobbyNewsGroup] = []
 
@@ -613,13 +568,11 @@ async def get_person_news(
     company_id: int,
     person_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """搜索人员新闻：自带「企业」标签（企业背景+兴趣交叉）+ 纯兴趣标签（AI 关键词检索）"""
-    company = await db.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="企业不存在")
+    company = await get_owned_company(company_id, current_user, db)
 
-    from models import Person
     person = await db.get(Person, person_id)
     if not person or person.company_id != company_id:
         raise HTTPException(status_code=404, detail="人员不存在")
@@ -630,14 +583,14 @@ async def get_person_news(
     person_position = str(person.position or "")
     hobbies = parse_hobby_tags(person.hobbies)
     industry_hint = _guess_industry(company_name)
-    cfg = await _load_llm_config(db)
-    llm_kw = _llm_config_kwargs(cfg)
+    cfg = await get_user_llm_config(current_user, db)
+    llm_kw = llm_config_kwargs(cfg)
 
     groups: list[HobbyNewsGroup] = []
     total_saved = 0
     any_ai = False
 
-    # 1) 「企业」标签：AI 生成「企业背景 + 个人兴趣」检索词，企业人员过滤规则
+    # 1) 「企业」标签
     company_queries, co_kw_ai = await generate_company_person_search_keywords(
         person_name=person_name,
         person_position=person_position,
@@ -679,7 +632,7 @@ async def get_person_news(
         f"AI过滤={'成功' if co_ai else '失败'}, 新增={co_saved}, 展示={len(co_items)}"
     )
 
-    # 2) 兴趣标签：AI 生成检索关键词 → 搜索 → 纯兴趣 AI 过滤；去重累加入库
+    # 2) 兴趣标签
     for hobby in hobbies:
         queries, kw_ai = await generate_hobby_search_keywords(hobby, **llm_kw)
         items, ai_filtered, message, saved = await _search_and_filter(

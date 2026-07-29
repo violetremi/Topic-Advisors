@@ -17,6 +17,7 @@ class Company(Base):
     company_code = Column(String(32), unique=True, nullable=False, comment="企业编号，如 QY20260625-0001")
     name = Column(String(200), nullable=False, comment="企业名称")
     credit_code = Column(String(50), nullable=False, comment="统一社会信用代码")
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True, comment="所属用户")
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
@@ -119,10 +120,34 @@ class TopicChain(Base):
 
 
 class SystemConfig(Base):
-    """系统配置——运行时持久化，无需重启即可生效"""
+    """系统配置——运行时持久化，无需重启即可生效（历史全局配置表，已弃用，保留以兼容旧数据）"""
     __tablename__ = "system_config"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     key = Column(String(64), unique=True, nullable=False, comment="配置键名")
     value = Column(Text, default="", comment="配置值")
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+class User(Base):
+    """用户——用户名即身份（无密码轻量鉴权）"""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(64), unique=True, nullable=False, index=True, comment="用户名（唯一标识）")
+    created_at = Column(DateTime, default=_utcnow)
+
+
+class UserConfig(Base):
+    """每用户私有配置（LLM / 搜索引擎等），key-value 按用户隔离"""
+    __tablename__ = "user_config"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    key = Column(String(64), nullable=False, comment="配置键名")
+    value = Column(Text, default="", comment="配置值")
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "key", name="uq_user_config_user_key"),
+    )

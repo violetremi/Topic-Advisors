@@ -1,4 +1,4 @@
-"""报告路由 - 触发 Agent 分析并查看历史报告"""
+"""报告路由 - 触发 Agent 分析并查看历史报告（按用户隔离）"""
 import logging
 import uuid
 from typing import List
@@ -8,7 +8,13 @@ from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from models import Company, Person, Report, CheckRun, SystemConfig
+from deps import (
+    get_current_user,
+    get_owned_company,
+    get_user_llm_config,
+    llm_config_kwargs,
+)
+from models import Company, Person, Report, CheckRun, User
 from schemas import ReportOut, CheckRunOut, CheckRunListItem
 from services.agent_service import (
     run_industry_analysis,
@@ -21,34 +27,6 @@ from services.agent_service import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/companies/{company_id}/reports", tags=["报告"])
 
-
-# ── 运行时配置加载 ──
-
-async def _load_llm_config(db: AsyncSession) -> dict:
-    """从 SystemConfig 表加载运行时 LLM 配置，空值回退到 .env 中的值"""
-    from config.settings import settings
-
-    result = await db.execute(select(SystemConfig))
-    rows = result.scalars().all()
-    cfg = {r.key: r.value for r in rows}
-    return {
-        "base_url": cfg.get("llm_base_url") or settings.openai_base_url,
-        "api_key": cfg.get("llm_api_key") or settings.openai_api_key,
-        "model": cfg.get("llm_model") or settings.llm_model,
-        "embed_model": cfg.get("llm_embed_model") or settings.embed_model,
-    }
-
-
-def _llm_config_kwargs(cfg: dict) -> dict:
-    """将 LLM 配置转为 call_llm 的 override 参数"""
-    return {
-        "base_url_override": cfg["base_url"],
-        "api_key_override": cfg["api_key"],
-        "model_override": cfg["model"],
-    }
-
-
-# ── 辅助函数 ──
 
 def _strip_think_tags(text: str) -> str:
     """移除模型推理标签 <think>...</think>"""
@@ -100,8 +78,13 @@ def _report_response(report: Report) -> dict:
 # ── 核查批次历史（必须放在 /{report_type} 之前，避免路由冲突）──
 
 @router.get("/check-runs", response_model=List[CheckRunListItem])
-async def list_check_runs(company_id: int, db: AsyncSession = Depends(get_db)):
+async def list_check_runs(
+    company_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """列出某企业的所有全量分析核查批次（倒序）"""
+    await get_owned_company(company_id, current_user, db)
     result = await db.execute(
         select(CheckRun)
         .where(CheckRun.company_id == company_id)
@@ -111,8 +94,14 @@ async def list_check_runs(company_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/check-runs/{run_id}")
-async def get_check_run(company_id: int, run_id: int, db: AsyncSession = Depends(get_db)):
+async def get_check_run(
+    company_id: int,
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """获取某批次的完整信息（含 4 份报告）"""
+    await get_owned_company(company_id, current_user, db)
     check_run = await db.get(CheckRun, run_id)
     if not check_run or check_run.company_id != company_id:
         raise HTTPException(status_code=404, detail="核查批次不存在")
@@ -138,7 +127,12 @@ async def get_check_run(company_id: int, run_id: int, db: AsyncSession = Depends
 # ── 获取历史报告列表 ──
 
 @router.get("", response_model=List[ReportOut])
-async def list_reports(company_id: int, db: AsyncSession = Depends(get_db)):
+async def list_reports(
+    company_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await get_owned_company(company_id, current_user, db)
     result = await db.execute(
         select(Report)
         .where(Report.company_id == company_id)
@@ -149,8 +143,13 @@ async def list_reports(company_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.get("/{report_type}", response_model=List[ReportOut])
 async def list_reports_by_type(
-    company_id: int, report_type: str, db: AsyncSession = Depends(get_db)):
+    company_id: int,
+    report_type: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """按类型获取报告列表"""
+    await get_owned_company(company_id, current_user, db)
     valid_types = {"industry", "company", "people", "summary"}
     if report_type not in valid_types:
         raise HTTPException(status_code=400, detail=f"无效的报告类型: {report_type}")
@@ -165,22 +164,21 @@ async def list_reports_by_type(
 # ── 触发行业分析 ──
 
 @router.post("/industry")
-async def trigger_industry_analysis(company_id: int, db: AsyncSession = Depends(get_db)):
+async def trigger_industry_analysis(
+    company_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """触发行业分析 Agent"""
-    company = await db.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="企业不存在")
-
-    cfg = await _load_llm_config(db)
-    logger.info(f"开始行业分析: {company.name}, 模型={cfg['model']}")
+    company = await get_owned_company(company_id, current_user, db)
+    cfg = await get_user_llm_config(current_user, db)
+    logger.info(f"开始行业分析: {company.name}, 用户={current_user.username}, 模型={cfg['model']}")
     content = await run_industry_analysis(
-        company.name, company.credit_code, **_llm_config_kwargs(cfg)
+        company.name, company.credit_code, **llm_config_kwargs(cfg)
     )
 
-    # 检查 LLM 是否返回了错误信息，如果是则直接透传错误
     if content.startswith("（"):
         logger.warning(f"行业分析 LLM 返回错误: {content[:100]}")
-        # 不保存错误内容为报告，直接返回错误
         raise HTTPException(status_code=502, detail=content)
 
     report = await _save_report(db, company_id, "industry", content)
@@ -191,16 +189,17 @@ async def trigger_industry_analysis(company_id: int, db: AsyncSession = Depends(
 # ── 触发企业分析 ──
 
 @router.post("/company")
-async def trigger_company_analysis(company_id: int, db: AsyncSession = Depends(get_db)):
+async def trigger_company_analysis(
+    company_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """触发企业分析 Agent"""
-    company = await db.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="企业不存在")
-
-    cfg = await _load_llm_config(db)
-    logger.info(f"开始企业分析: {company.name}, 模型={cfg['model']}")
+    company = await get_owned_company(company_id, current_user, db)
+    cfg = await get_user_llm_config(current_user, db)
+    logger.info(f"开始企业分析: {company.name}, 用户={current_user.username}, 模型={cfg['model']}")
     content = await run_company_analysis(
-        company.name, company.credit_code, **_llm_config_kwargs(cfg)
+        company.name, company.credit_code, **llm_config_kwargs(cfg)
     )
 
     if content.startswith("（"):
@@ -215,13 +214,14 @@ async def trigger_company_analysis(company_id: int, db: AsyncSession = Depends(g
 # ── 触发人员分析 ──
 
 @router.post("/people")
-async def trigger_people_analysis(company_id: int, db: AsyncSession = Depends(get_db)):
+async def trigger_people_analysis(
+    company_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """触发人员分析 Agent"""
-    company = await db.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="企业不存在")
+    company = await get_owned_company(company_id, current_user, db)
 
-    # 检查是否有人员
     result = await db.execute(
         select(Person).where(Person.company_id == company_id)
     )
@@ -229,8 +229,8 @@ async def trigger_people_analysis(company_id: int, db: AsyncSession = Depends(ge
     if not people:
         raise HTTPException(status_code=400, detail="请先添加至少一名核心人员")
 
-    cfg = await _load_llm_config(db)
-    logger.info(f"开始人员分析: {company.name}, 人数={len(people)}, 模型={cfg['model']}")
+    cfg = await get_user_llm_config(current_user, db)
+    logger.info(f"开始人员分析: {company.name}, 人数={len(people)}, 用户={current_user.username}, 模型={cfg['model']}")
     people_data = [
         {
             "name": p.name,
@@ -243,7 +243,7 @@ async def trigger_people_analysis(company_id: int, db: AsyncSession = Depends(ge
         }
         for p in people
     ]
-    content = await run_people_analysis(company.name, people_data, **_llm_config_kwargs(cfg))
+    content = await run_people_analysis(company.name, people_data, **llm_config_kwargs(cfg))
 
     if content.startswith("（"):
         logger.warning(f"人员分析 LLM 返回错误: {content[:100]}")
@@ -257,11 +257,13 @@ async def trigger_people_analysis(company_id: int, db: AsyncSession = Depends(ge
 # ── 触发综合研判 ──
 
 @router.post("/summary")
-async def trigger_summary_analysis(company_id: int, db: AsyncSession = Depends(get_db)):
+async def trigger_summary_analysis(
+    company_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """触发综合研判 Agent（需要三份报告齐全）"""
-    company = await db.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="企业不存在")
+    company = await get_owned_company(company_id, current_user, db)
 
     industry_report = await _get_latest_report(db, company_id, "industry")
     company_report = await _get_latest_report(db, company_id, "company")
@@ -281,10 +283,9 @@ async def trigger_summary_analysis(company_id: int, db: AsyncSession = Depends(g
             detail=f"请先完成以下分析: {'、'.join(missing)}",
         )
 
-    cfg = await _load_llm_config(db)
-    logger.info(f"开始综合研判: {company.name}, 模型={cfg['model']}")
+    cfg = await get_user_llm_config(current_user, db)
+    logger.info(f"开始综合研判: {company.name}, 用户={current_user.username}, 模型={cfg['model']}")
 
-    # 查询人员列表
     people_result = await db.execute(
         select(Person).where(Person.company_id == company_id)
     )
@@ -320,7 +321,7 @@ async def trigger_summary_analysis(company_id: int, db: AsyncSession = Depends(g
         people_report=people_report.content,
         people_list=people_data,
         stored_news=stored_news,
-        **_llm_config_kwargs(cfg),
+        **llm_config_kwargs(cfg),
     )
 
     if content.startswith("（"):
@@ -335,11 +336,13 @@ async def trigger_summary_analysis(company_id: int, db: AsyncSession = Depends(g
 # ── 一键全量顺序分析（含批次管理）──
 
 @router.post("/full-analysis")
-async def trigger_full_analysis(company_id: int, db: AsyncSession = Depends(get_db)):
+async def trigger_full_analysis(
+    company_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """一键全量分析：依次执行行业→企业→人员→综合研判，作为同一批次入库"""
-    company = await db.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="企业不存在")
+    company = await get_owned_company(company_id, current_user, db)
 
     people_result = await db.execute(
         select(Person).where(Person.company_id == company_id)
@@ -348,7 +351,7 @@ async def trigger_full_analysis(company_id: int, db: AsyncSession = Depends(get_
     if not people:
         raise HTTPException(status_code=400, detail="请先添加至少一名核心人员")
 
-    cfg = await _load_llm_config(db)
+    cfg = await get_user_llm_config(current_user, db)
     batch_id = str(uuid.uuid4())
     result = {}
 
@@ -360,9 +363,9 @@ async def trigger_full_analysis(company_id: int, db: AsyncSession = Depends(get_
 
     try:
         # Step 1: 行业分析
-        logger.info(f"[全量分析/1] 开始行业分析: {company.name}")
+        logger.info(f"[全量分析/1] 开始行业分析: {company.name}, 用户={current_user.username}")
         industry_content = await run_industry_analysis(
-            company.name, company.credit_code, **_llm_config_kwargs(cfg)
+            company.name, company.credit_code, **llm_config_kwargs(cfg)
         )
         if industry_content.startswith("（"):
             raise RuntimeError(f"行业分析失败: {industry_content[:100]}")
@@ -373,7 +376,7 @@ async def trigger_full_analysis(company_id: int, db: AsyncSession = Depends(get_
         # Step 2: 企业分析
         logger.info(f"[全量分析/2] 开始企业分析: {company.name}")
         company_content = await run_company_analysis(
-            company.name, company.credit_code, **_llm_config_kwargs(cfg)
+            company.name, company.credit_code, **llm_config_kwargs(cfg)
         )
         if company_content.startswith("（"):
             raise RuntimeError(f"企业分析失败: {company_content[:100]}")
@@ -388,7 +391,7 @@ async def trigger_full_analysis(company_id: int, db: AsyncSession = Depends(get_
              "background": p.background, "public_links": p.public_links,
              "notes": p.notes, "hobbies": p.hobbies} for p in people
         ]
-        people_content = await run_people_analysis(company.name, people_data, **_llm_config_kwargs(cfg))
+        people_content = await run_people_analysis(company.name, people_data, **llm_config_kwargs(cfg))
         if people_content.startswith("（"):
             raise RuntimeError(f"人员分析失败: {people_content[:100]}")
         people_report = await _save_report(db, company_id, "people", people_content, batch_id)
@@ -414,7 +417,7 @@ async def trigger_full_analysis(company_id: int, db: AsyncSession = Depends(get_
             people_report=people_content,
             people_list=people_data,
             stored_news=stored_news,
-            **_llm_config_kwargs(cfg),
+            **llm_config_kwargs(cfg),
         )
         if summary_content.startswith("（"):
             raise RuntimeError(f"综合研判失败: {summary_content[:100]}")

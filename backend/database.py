@@ -47,6 +47,7 @@ async def init_db():
         ("ALTER TABLE reports ADD COLUMN batch_id VARCHAR(36) DEFAULT NULL",),
         ("ALTER TABLE check_runs ADD COLUMN batch_id VARCHAR(36) DEFAULT ''",),
         ("ALTER TABLE news ADD COLUMN embedding TEXT DEFAULT ''",),
+        ("ALTER TABLE companies ADD COLUMN user_id INTEGER REFERENCES users(id)",),
     ]
     for sql, in _migrate:
         try:
@@ -73,6 +74,17 @@ async def init_db():
     try:
         async with engine.begin() as conn:
             await conn.execute(text("UPDATE check_runs SET batch_id = 'legacy' WHERE batch_id IS NULL"))
+    except Exception:
+        pass
+
+    # 存量数据迁移：升级前存在的业务数据无归属用户（users 表为空），统一清空一次。
+    # 一旦有用户登录（users 非空），后续启动不再清空，保证用户自己创建的数据安全。
+    try:
+        async with engine.begin() as conn:
+            user_count = (await conn.execute(text("SELECT COUNT(*) FROM users"))).scalar() or 0
+            if user_count == 0:
+                await conn.execute(text("DELETE FROM companies"))  # 级联删除 persons/reports/news 等子表
+                logger.info("迁移：已清空升级前的存量业务数据（无归属用户）")
     except Exception:
         pass
 

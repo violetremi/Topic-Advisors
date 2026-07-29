@@ -1,16 +1,60 @@
 /** 后端 API 封装 */
 const BASE = '/api';
 
+// ── 轻量鉴权：用户名即身份，存 localStorage ──
+const USERNAME_KEY = 'intel_username';
+
+export function getStoredUsername(): string | null {
+  return localStorage.getItem(USERNAME_KEY);
+}
+export function setStoredUsername(username: string): void {
+  localStorage.setItem(USERNAME_KEY, username);
+}
+export function clearStoredUsername(): void {
+  localStorage.removeItem(USERNAME_KEY);
+}
+
+/** 未登录 / 登录失效时抛出，供 AuthContext 统一处理 */
+export class UnauthorizedError extends Error {}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${url}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
+  const username = getStoredUsername();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options?.headers as Record<string, string> | undefined),
+  };
+  if (username) {
+    headers['X-Username'] = username;
+  }
+
+  const res = await fetch(`${BASE}${url}`, { ...options, headers });
+
+  if (res.status === 401) {
+    clearStoredUsername();
+    window.dispatchEvent(new Event('intel:unauthorized'));
+    const body = await res.json().catch(() => ({}));
+    const err = new UnauthorizedError(body.detail || '未登录或登录已失效');
+    throw err;
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail || `请求失败 (${res.status})`);
   }
   return res.json();
+}
+
+// ── Auth ──
+
+export interface LoginResponse {
+  username: string;
+  user_id: number;
+}
+
+export function login(username: string) {
+  return request<LoginResponse>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username }),
+  });
 }
 
 // ── Company ──
