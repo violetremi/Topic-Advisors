@@ -34,9 +34,10 @@ git push -u origin main
 3. **Connect a repository** → 授权 GitHub → 选中 `violetremi/Topic-Advisors`
 4. **Environment**：选 **Docker**（关键：不要选 Node/Python 等.buildpack）
 5. **Branch**：`main`
-6. **Instance Type**：选 **Free**（免费档）
-7. **Health Check Path**（可选，推荐）：填 `/api/health`
-8. 点 **Create Web Service**
+6. **Region**：选 **Singapore**（离中国最近，国内访问延迟更低；留空则用默认 Oregon，慢约 2–3 倍）
+7. **Instance Type**：选 **Free**（免费档）
+8. **Health Check Path**（可选，推荐）：填 `/api/health`
+9. 点 **Create Web Service**
 
 Render 会自动拉代码、按 `Dockerfile` 构建镜像并启动，分配 `https://<服务名>.onrender.com`。构建约 2–4 分钟，可在 **Logs** 标签实时查看。
 
