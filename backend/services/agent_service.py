@@ -15,6 +15,17 @@ from ddgs import DDGS
 from config.settings import settings
 from config.prompts import AGENT_PROMPTS
 
+# 禁用 ddgs 的 DHT 结果缓存：DDGS 在模块导入时会初始化一个 DhtClient
+# （_network_client），一旦某次搜索返回结果就会在「后台线程」里通过
+# asyncio.new_event_loop() + set_event_loop() 启动一个全局事件循环做缓存，
+# 这会污染 SQLAlchemy 的 greenlet 异步上下文，导致后续 await db.commit() 抛出
+# "greenlet_spawn has not been called; can't call await_only() here"。
+# 搜索结果缓存对本系统非必需，直接关闭以根除该隐患。
+try:
+    DDGS._network_client = None
+except Exception:  # pragma: no cover - 防御性
+    pass
+
 logger = logging.getLogger(__name__)
 
 # ════════════════════════════════════════════
