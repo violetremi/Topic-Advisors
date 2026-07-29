@@ -321,6 +321,10 @@ async def call_llm(
     temperature: float = 0.7,
     extra_body: Optional[dict] = None,
     assistant_prefill: Optional[str] = None,
+    # 以下两个参数仅用于「吸收」经由统一配置字典透传进来的搜索引擎配置，
+    # call_llm 本身不调用搜索引擎，调用方会自行把这两个值传给 web_search()。
+    search_provider: Optional[str] = None,
+    search_api_key: Optional[str] = None,
 ) -> str:
     """调用 OpenAI 兼容接口，返回回复文本。
 
