@@ -1,0 +1,23 @@
+# 排除本地依赖与构建产物，加速镜像构建、避免把本机环境带进容器
+**/__pycache__
+*.pyc
+*.pyo
+
+# Python 虚拟环境（容器内重新 pip install）
+backend/.venv
+backend/venv
+
+# 前端本地依赖与本地构建产物（容器内重新安装并构建）
+frontend/node_modules
+frontend/dist
+
+# 密钥与环境配置（改用平台 Secrets / 环境变量注入）
+.env
+*.db
+
+# 版本控制与编辑器
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
