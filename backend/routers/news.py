@@ -522,15 +522,15 @@ async def get_cached_person_hobby_news(
     current_user: User = Depends(get_current_user),
 ):
     """读取该人员「企业」标签 + 各兴趣标签已入库新闻（不触发联网搜索）"""
-    await get_owned_company(company_id, current_user, db)
+    company = await get_owned_company(company_id, current_user, db)
 
     person = await db.get(Person, person_id)
     if not person or person.company_id != company_id:
         raise HTTPException(status_code=404, detail="人员不存在")
 
     hobbies = parse_hobby_tags(person.hobbies)
-    company_name = str(person.company.name if person.company else "")
-    credit_code = str(person.company.credit_code if person.company else "")
+    company_name = str(company.name or "")
+    credit_code = str(company.credit_code or "")
     exclude_keys = _company_exclude_keywords(company_name, credit_code)
     groups: list[HobbyNewsGroup] = []
 

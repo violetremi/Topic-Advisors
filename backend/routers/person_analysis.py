@@ -63,7 +63,7 @@ async def create_topic_analysis(
     current_user: User = Depends(get_current_user),
 ):
     """生成人员话题分析"""
-    await get_owned_company(company_id, current_user, db)
+    company = await get_owned_company(company_id, current_user, db)
 
     person = await db.get(Person, person_id)
     if not person or person.company_id != company_id:
@@ -75,7 +75,7 @@ async def create_topic_analysis(
     stored_news = await fetch_stored_news_for_analysis(
         db,
         company_id,
-        person.company.name if person.company else "",
+        company.name,
         base_url=cfg["base_url"],
         api_key=cfg.get("api_key") or "",
         model=cfg.get("embed_model") or "text-embedding-bge-m3",
@@ -95,7 +95,7 @@ async def create_topic_analysis(
 
     logger.info(f"开始生成话题分析: {person.name}, 用户={current_user.username}, 模型={cfg['model']}")
     content = await run_topic_analysis(
-        person.company.name if person.company else "",
+        company.name,
         person_data,
         stored_news=stored_news,
         **llm_config_kwargs(cfg),
