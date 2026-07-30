@@ -328,7 +328,7 @@ async def call_llm(
     api_key_override: Optional[str] = None,
     model_override: Optional[str] = None,
     max_retries: int = 2,
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
     temperature: float = 0.7,
     extra_body: Optional[dict] = None,
     assistant_prefill: Optional[str] = None,

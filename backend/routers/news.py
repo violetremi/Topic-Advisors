@@ -349,7 +349,7 @@ async def _search_and_filter(
         exclude_company=company_name if mode == "hobby" else "",
         person_position=person_position,
         hobbies=hobby_list,
-        **{**llm_config_kwargs(cfg), "max_tokens": 4096},
+        **{**llm_config_kwargs(cfg), "max_tokens": 16384},
     )
 
     if mode == "hobby":
