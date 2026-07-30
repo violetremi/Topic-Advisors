@@ -4,21 +4,19 @@ import logging
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy.pool import NullPool, StaticPool
+from sqlalchemy.pool import StaticPool
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
 _db_url = settings.database_url
 _engine_kwargs: dict = {"echo": False}
-# SQLite：并发请求下用 StaticPool，避免默认连接池在回滚后取连接触发 MissingGreenlet
+# SQLite：使用 StaticPool 避免每次创建新连接触发 MissingGreenlet
+# StaticPool 复用单个连接，SQLite 自身锁机制处理并发写入
 if _db_url.startswith("sqlite"):
     _engine_kwargs["connect_args"] = {"check_same_thread": False}
-    # :memory: 必须 StaticPool；文件库用 NullPool 也可安全支持多并发
-    if ":memory:" in _db_url:
-        _engine_kwargs["poolclass"] = StaticPool
-    else:
-        _engine_kwargs["poolclass"] = NullPool
+    _engine_kwargs["poolclass"] = StaticPool
+    _engine_kwargs["pool_pre_ping"] = True
 
 engine = create_async_engine(_db_url, **_engine_kwargs)
 async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
