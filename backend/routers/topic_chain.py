@@ -161,12 +161,23 @@ async def create_topic_chain(
         person_ids=list(req.person_ids),
     )
 
+    # 截短过长的报告/新闻，避免推理模型 token 耗尽
+    def _truncate(text: str, max_len: int = 800) -> str:
+        if not text or len(text) <= max_len:
+            return text
+        return text[:max_len] + "\n\n…（后续内容已截断，以上为关键信息）"
+
     content = await run_topic_chain(
         company_name=company.name,
-        industry_report=latest_industry.content,
-        company_report=latest_company.content,
-        person_analyses=person_analyses_data,
-        stored_news=stored_news,
+        industry_report=_truncate(latest_industry.content, 600),
+        company_report=_truncate(latest_company.content, 600),
+        person_analyses=[{
+            "name": p["name"],
+            "position": p["position"],
+            "hobbies": p["hobbies"],
+            "topic_analysis": _truncate(p.get("topic_analysis", ""), 400),
+        } for p in person_analyses_data],
+        stored_news=_truncate(stored_news, 1200),
         **llm_config_kwargs(cfg),
     )
 
