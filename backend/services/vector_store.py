@@ -130,7 +130,11 @@ async def vectorize_news_rows(
             texts, base_url=base_url, api_key=api_key, model=model
         )
     except Exception as e:
-        logger.warning(f"新闻向量化失败（不影响入库）: {e}")
+        err_str = str(e)
+        if "403" in err_str or "no access" in err_str.lower():
+            logger.debug(f"新闻向量化跳过（API 无 embedding 权限）: {e}")
+        else:
+            logger.warning(f"新闻向量化失败（不影响入库）: {e}")
         return 0
 
     saved = 0
