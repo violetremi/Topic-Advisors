@@ -204,6 +204,8 @@ async def _save_news(
     db: AsyncSession, company_id: int, news_type: str, items: list[dict]
 ) -> list[News]:
     """将 AI 筛选新闻入库（URL / 标题去重），返回新插入的 News 行。"""
+    await db.flush()
+
     result = await db.execute(
         select(News).where(
             News.company_id == company_id,
@@ -228,26 +230,23 @@ async def _save_news(
         if norm_title and norm_title in existing_titles:
             continue
 
-        news = News(
-            company_id=company_id,
-            news_type=news_type,
-            title=title[:500],
-            url=url[:1000],
-            snippet=(item.get("snippet") or "")[:500],
-            date=(item.get("date") or "")[:50],
-            relevance_reason=(item.get("relevance_reason") or "")[:200],
-            embedding="",
-        )
         try:
-            async with db.begin_nested():
-                db.add(news)
-                await db.flush()
+            news = News(
+                company_id=company_id,
+                news_type=news_type,
+                title=title[:500],
+                url=url[:1000],
+                snippet=(item.get("snippet") or "")[:500],
+                date=(item.get("date") or "")[:50],
+                relevance_reason=(item.get("relevance_reason") or "")[:200],
+                embedding="",
+            )
+            db.add(news)
             new_rows.append(news)
             existing_urls.add(norm_url)
             if norm_title:
                 existing_titles.add(norm_title)
-        except Exception as e:
-            logger.debug(f"单条新闻入库跳过: {title[:40]} err={e}")
+        except Exception:
             continue
 
     if new_rows:
@@ -263,9 +262,8 @@ async def _save_news(
                 f"新增={len(new_rows)}/{len(items)} 条"
             )
         except Exception as e:
-            await db.rollback()
             logger.warning(
-                f"新闻入库失败，回滚: company={company_id}, type={news_type}, err={e}"
+                f"新闻入库失败: company={company_id}, type={news_type}, err={e}"
             )
             return []
 

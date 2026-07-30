@@ -145,13 +145,7 @@ async def vectorize_news_rows(
             await db.commit()
             logger.info(f"新闻向量化完成: {saved}/{len(pending)} 条")
         except Exception as e:
-            # 向量写入失败不应摧毁外层会话；尽量用 rollback 复位后继续业务流程
             logger.warning(f"新闻向量写入失败: {e}")
-            try:
-                await db.rollback()
-            except Exception:
-                pass
-            return 0
     return saved
 
 
